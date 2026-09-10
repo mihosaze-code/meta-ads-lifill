@@ -287,6 +287,27 @@ def parse_date_safe(v):
 INSIGHTS_CHUNK_DAYS = 30
 
 
+def fetch_chunk_with_data_size_bisection_(fetch_fn, since, until):
+    """fetch_fn(since, until)を呼び出す。広告数が多い案件では、INSIGHTS_CHUNK_DAYS（30日）分でも
+    Meta側から「一度に要求するデータ量を減らしてほしい」（code=1、'reduce the amount of data'）と
+    拒否されることがある。これはgraph_api_get側の一時エラー再試行（同じ内容のまま待って再試行）では
+    解決しない性質のエラーのため、ここで期間を半分に割って再帰的に取得し直す。
+    ※ time_increment=1（日次・行単位）のデータにのみ使用可能。月次のユニークリーチ集計
+    （fetch_monthly_age_insights等）は期間全体を1つの集計単位として扱っているため、ここで
+    期間を割ると二重カウントになってしまう。そちらには絶対に使わないこと。"""
+    try:
+        return fetch_fn(since, until)
+    except RuntimeError as e:
+        span_days = (until - since).days + 1
+        if 'reduce the amount of data' in str(e) and span_days > 1:
+            mid = since + timedelta(days=span_days // 2 - 1)
+            print(f'    データ量過多のため期間を分割して再試行します: {since}〜{mid} と {mid + timedelta(days=1)}〜{until}')
+            first = fetch_chunk_with_data_size_bisection_(fetch_fn, since, mid)
+            second = fetch_chunk_with_data_size_bisection_(fetch_fn, mid + timedelta(days=1), until)
+            return first + second
+        raise
+
+
 def fetch_insights(account_id, token, since, until):
     """指定した since〜until を丸ごと受け取り、内部でINSIGHTS_CHUNK_DAYSごとに自動分割して取得する。"""
     all_rows = []
@@ -294,7 +315,10 @@ def fetch_insights(account_id, token, since, until):
     while chunk_start <= until:
         chunk_end = min(chunk_start + timedelta(days=INSIGHTS_CHUNK_DAYS - 1), until)
         print(f'  取得中: {chunk_start} 〜 {chunk_end}')
-        all_rows.extend(fetch_insights_chunk(account_id, token, chunk_start, chunk_end))
+        all_rows.extend(fetch_chunk_with_data_size_bisection_(
+            lambda s, u: fetch_insights_chunk(account_id, token, s, u),
+            chunk_start, chunk_end,
+        ))
         chunk_start = chunk_end + timedelta(days=1)
     return all_rows
 
