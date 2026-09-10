@@ -1,0 +1,56 @@
+name: Meta広告データ同期
+
+on:
+  schedule:
+    # 毎日 UTC 18:07 = 日本時間 翌3:07 に実行
+    # 分をキリの良い"0"からずらしているのは、GitHub Actions側の混雑（ちょうどの時刻に
+    # 実行が集中し遅延しやすい）を避けるため。実行時刻は多少前後することがある。
+    - cron: '7 18 * * *'
+  workflow_dispatch:
+    inputs:
+      backfill_days:
+        description: '過去何日分を遡って取得するか（空欄ならシートの続きから自動取得）。since/untilを指定する場合は無視される'
+        required: false
+        default: ''
+      since:
+        description: '（古い期間を分割取得する場合）取得開始日 YYYY-MM-DD。untilと両方指定した時のみ有効'
+        required: false
+        default: ''
+      until:
+        description: '（古い期間を分割取得する場合）取得終了日 YYYY-MM-DD。1回あたり120日程度までを推奨'
+        required: false
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: pip install -r requirements.txt
+
+      - name: Meta広告データをスプレッドシートへ同期
+        env:
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days }}
+          BACKFILL_SINCE: ${{ github.event.inputs.since }}
+          BACKFILL_UNTIL: ${{ github.event.inputs.until }}
+          # 広告単位×年齢層の月次取得（データ量が大きいためオプトイン）。
+          # 有効にする案件は Settings > Secrets and variables > Actions > Variables で
+          # ENABLE_AD_AGE_INSIGHTS = true を設定する（未設定の案件は自動的に無効のまま）。
+          ENABLE_AD_AGE_INSIGHTS: ${{ vars.ENABLE_AD_AGE_INSIGHTS }}
+          # Instagramフォロワー数の取得（設定した案件のみ有効。Settings > Secrets and
+          # variables > Actions > Secrets で INSTAGRAM_ACCOUNT_ID を登録している場合のみ
+          # 値が入る。未登録の案件は空文字のままとなり、スクリプト側で自動的にスキップされる）。
+          INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
+        run: python scripts/sync_meta_to_sheets.py
